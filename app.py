@@ -7,7 +7,7 @@ from datetime import datetime
 # ================= CONFIG & STYLE =================
 st.set_page_config(page_title="Blog Cộng Đồng", layout="centered", page_icon="📝")
 
-# CSS để giao diện trông hiện đại hơn
+# CSS tối ưu giao diện và nút bấm reaction
 st.markdown("""
     <style>
     .post-card {
@@ -18,7 +18,20 @@ st.markdown("""
         margin-bottom: 25px;
         border: 1px solid #eee;
     }
-    .stButton>button { width: 100%; border-radius: 5px; }
+    /* Style cho các nút bấm reaction nhỏ gọn hơn */
+    div[data-testid="stHorizontalBlock"] button {
+        border: 1px solid #eee;
+        background: #f9f9f9;
+        border-radius: 20px;
+        padding: 2px 12px;
+        transition: 0.3s;
+    }
+    div[data-testid="stHorizontalBlock"] button:hover {
+        border-color: #ff4b4b;
+        color: #ff4b4b;
+        background: #fff5f5;
+    }
+    .stButton>button { width: 100%; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -34,7 +47,6 @@ EMOJIS = ["👍", "❤️", "😂", "😮", "😢"]
 # ================= DB CONNECTION =================
 def get_connection():
     try:
-        # Tự động ép kiểu port và lấy thông tin từ secrets
         return psycopg2.connect(
             host=st.secrets["DB_HOST"],
             dbname=st.secrets["DB_NAME"],
@@ -42,30 +54,53 @@ def get_connection():
             password=st.secrets["DB_PASSWORD"],
             port=int(st.secrets["DB_PORT"]),
             sslmode="require",
-            connect_timeout=10 # Tránh treo trang nếu DB lỗi
+            connect_timeout=10
         )
     except Exception as e:
         st.error(f"❌ Lỗi kết nối DB: {e}")
         return None
 
+# ================= COMPONENTS (FRAGMENTS) =================
+@st.fragment
+def reaction_section(post_id):
+    """Phần Reaction độc lập, không load lại toàn bộ trang"""
+    conn = get_connection()
+    if conn:
+        cur = conn.cursor()
+        # Tạo cột cho các Emoji
+        react_cols = st.columns(len(EMOJIS))
+        
+        for i, emoji in enumerate(EMOJIS):
+            cur.execute("SELECT count FROM reactions WHERE post_id=%s AND emoji=%s", (post_id, emoji))
+            row = cur.fetchone()
+            count = row[0] if row else 0
+            
+            # Khi bấm nút này, chỉ hàm reaction_section chạy lại
+            if react_cols[i].button(f"{emoji} {count}", key=f"re_{post_id}_{emoji}"):
+                cur.execute("""
+                    INSERT INTO reactions (post_id, emoji, count) VALUES (%s, %s, 1)
+                    ON CONFLICT (post_id, emoji) DO UPDATE SET count = reactions.count + 1
+                """, (post_id, emoji))
+                conn.commit()
+                st.rerun() # Chỉ rerun nội bộ fragment
+        cur.close()
+        conn.close()
+
 # ================= UI HELPERS =================
 def display_post(post):
-    """Hàm hiển thị bài viết theo dạng Card chuyên nghiệp"""
-    with st.container():
-        st.markdown(f"## {post[1]}")
-        st.caption(f"📂 {post[6]} | ✍️ {post[4]} | 🕒 {post[5].strftime('%d/%m/%Y %H:%M')}")
-        
-        # Hiển thị ảnh
-        if post[3]:
-            img_path = os.path.join("images", post[3])
-            if os.path.exists(img_path):
-                st.image(Image.open(img_path), use_container_width=True)
-        
-        st.write(post[2])
-        st.divider()
+    """Hiển thị nội dung bài viết"""
+    st.markdown(f"## {post[1]}")
+    st.caption(f"📂 {post[6]} | ✍️ {post[4]} | 🕒 {post[5].strftime('%d/%m/%Y %H:%M')}")
+    
+    if post[3]:
+        img_path = os.path.join("images", post[3])
+        if os.path.exists(img_path):
+            st.image(Image.open(img_path), use_container_width=True)
+    
+    st.write(post[2])
 
 # ================= MAIN APP =================
-st.sidebar.title("🎮 Menu Điều Hướng")
+st.sidebar.title("🎮 Điều Hướng")
 menu = st.sidebar.radio("Chọn chức năng:", ["📖 Bản tin", "✍️ Viết bài mới", "⚙️ Quản trị"])
 
 # ----------------- XEM BÀI -----------------
@@ -81,37 +116,26 @@ if menu == "📖 Bản tin":
     conn = get_connection()
     if conn:
         cur = conn.cursor()
-        # Query tối ưu: Chỉ lấy bài viết cần thiết
         cur.execute("SELECT id, title, content, image, author, created_at, category FROM posts ORDER BY created_at DESC")
         posts = cur.fetchall()
 
         for post in posts:
-            # Logic lọc
+            # Logic lọc dữ liệu
             if selected_category != "Tất cả" and post[6] != selected_category: continue
             if search_query and not any(search_query.lower() in str(f).lower() for f in [post[1], post[2], post[4]]): continue
 
-            # Hiển thị bài viết
+            # Vùng hiển thị bài viết
             with st.container():
                 display_post(post)
                 
-                # Reactions tầng 1
-                react_cols = st.columns(len(EMOJIS) + 1)
-                for i, emoji in enumerate(EMOJIS):
-                    cur.execute("SELECT count FROM reactions WHERE post_id=%s AND emoji=%s", (post[0], emoji))
-                    row = cur.fetchone()
-                    count = row[0] if row else 0
-                    if react_cols[i].button(f"{emoji} {count}", key=f"re_{post[0]}_{emoji}"):
-                        cur.execute("""
-                            INSERT INTO reactions (post_id, emoji, count) VALUES (%s, %s, 1)
-                            ON CONFLICT (post_id, emoji) DO UPDATE SET count = reactions.count + 1
-                        """, (post[0], emoji))
-                        conn.commit()
-                        st.rerun()
-
-                # Comments tầng 2
+                # Gọi phần Reaction (Fragment)
+                reaction_section(post[0])
+                
+                # Comments (Expander)
                 with st.expander(f"💬 Bình luận"):
                     cur.execute("SELECT author, content, created_at FROM comments WHERE post_id=%s ORDER BY created_at ASC", (post[0],))
-                    for c in cur.fetchall():
+                    all_comments = cur.fetchall()
+                    for c in all_comments:
                         st.markdown(f"**{c[0]}**: {c[1]} *({c[2].strftime('%H:%M')})*")
                     
                     with st.form(key=f"comment_form_{post[0]}", clear_on_submit=True):
@@ -122,7 +146,8 @@ if menu == "📖 Bản tin":
                                 cur.execute("INSERT INTO comments (post_id, author, content) VALUES (%s, %s, %s)",
                                            (post[0], c_name, c_msg))
                                 conn.commit()
-                                st.rerun()
+                                st.rerun() # Rerun toàn trang để cập nhật danh sách comment mới
+            st.divider()
         cur.close()
         conn.close()
 
@@ -135,7 +160,6 @@ elif menu == "✍️ Viết bài mới":
         t3 = st.text_input("Tên tác giả", "Ẩn danh")
         t4 = st.text_area("Nội dung bài viết", height=250)
         t5 = st.file_uploader("Đính kèm hình ảnh", type=['jpg', 'png', 'jpeg'])
-        
         submit = st.form_submit_button("🚀 Xuất bản ngay")
         
         if submit:
@@ -160,7 +184,6 @@ elif menu == "✍️ Viết bài mới":
 # ----------------- QUẢN TRỊ -----------------
 elif menu == "⚙️ Quản trị":
     st.header("⚙️ Hệ thống quản lý")
-    # Thêm mật khẩu đơn giản để bảo vệ mục quản lý
     pw = st.text_input("Nhập mã quản trị", type="password")
     if pw == st.secrets.get("ADMIN_PASSWORD", "123456"):
         conn = get_connection()
@@ -176,5 +199,3 @@ elif menu == "⚙️ Quản trị":
                     conn.commit()
                     st.rerun()
             conn.close()
-    else:
-        st.info("Vui lòng nhập đúng mã quản trị để truy cập.")
