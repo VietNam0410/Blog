@@ -4,167 +4,177 @@ import os
 from PIL import Image
 from datetime import datetime
 
-# ================= CONFIG =================
-st.set_page_config(page_title="Blog cộng đồng", layout="centered")
+# ================= CONFIG & STYLE =================
+st.set_page_config(page_title="Blog Cộng Đồng", layout="centered", page_icon="📝")
 
-# Tạo thư mục ảnh nếu chưa có
+# CSS để giao diện trông hiện đại hơn
+st.markdown("""
+    <style>
+    .post-card {
+        border-radius: 10px;
+        padding: 20px;
+        background-color: #ffffff;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        margin-bottom: 25px;
+        border: 1px solid #eee;
+    }
+    .stButton>button { width: 100%; border-radius: 5px; }
+    </style>
+""", unsafe_allow_html=True)
+
+# Khởi tạo thư mục ảnh
 if not os.path.exists("images"):
     os.makedirs("images")
 
-# ================= CONSTANT =================
+# ================= CONSTANTS =================
 CATEGORIES = ["Tất cả", "Truyền kỳ Thuỷ Dương", "Triết lý nhân sinh", "Meme", "Thơ ca", "Khác"]
 VALID_CATEGORIES = CATEGORIES[1:]
 EMOJIS = ["👍", "❤️", "😂", "😮", "😢"]
 
-# ================= DB CONNECT =================
-# Dùng hàm này để đảm bảo kết nối luôn sống
+# ================= DB CONNECTION =================
 def get_connection():
     try:
-        conn = psycopg2.connect(
+        # Tự động ép kiểu port và lấy thông tin từ secrets
+        return psycopg2.connect(
             host=st.secrets["DB_HOST"],
             dbname=st.secrets["DB_NAME"],
             user=st.secrets["DB_USER"],
             password=st.secrets["DB_PASSWORD"],
-            port=st.secrets["DB_PORT"],
-            sslmode="require"
+            port=int(st.secrets["DB_PORT"]),
+            sslmode="require",
+            connect_timeout=10 # Tránh treo trang nếu DB lỗi
         )
-        return conn
     except Exception as e:
-        st.error(f"Lỗi kết nối cơ sở dữ liệu: {e}")
+        st.error(f"❌ Lỗi kết nối DB: {e}")
         return None
 
-# ================= UI =================
-st.markdown("<h2 style='text-align:center'>📝 Blog cộng đồng</h2>", unsafe_allow_html=True)
+# ================= UI HELPERS =================
+def display_post(post):
+    """Hàm hiển thị bài viết theo dạng Card chuyên nghiệp"""
+    with st.container():
+        st.markdown(f"## {post[1]}")
+        st.caption(f"📂 {post[6]} | ✍️ {post[4]} | 🕒 {post[5].strftime('%d/%m/%Y %H:%M')}")
+        
+        # Hiển thị ảnh
+        if post[3]:
+            img_path = os.path.join("images", post[3])
+            if os.path.exists(img_path):
+                st.image(Image.open(img_path), use_container_width=True)
+        
+        st.write(post[2])
+        st.divider()
 
-menu = st.sidebar.selectbox(
-    "📌 Menu",
-    ["📖 Xem bài", "✍️ Đăng bài", "⚙️ Quản lý bài viết"]
-)
+# ================= MAIN APP =================
+st.sidebar.title("🎮 Menu Điều Hướng")
+menu = st.sidebar.radio("Chọn chức năng:", ["📖 Bản tin", "✍️ Viết bài mới", "⚙️ Quản trị"])
 
-# ================= ĐĂNG BÀI ======================
-if menu == "✍️ Đăng bài":
-    st.subheader("✍️ Viết bài mới")
-    title = st.text_input("Tiêu đề")
-    author = st.text_input("Tác giả", value="Ẩn danh")
-    category = st.selectbox("📂 Chủ đề", VALID_CATEGORIES)
-    content = st.text_area("Nội dung", height=300)
-    image = st.file_uploader("Ảnh (không bắt buộc)", type=["png", "jpg", "jpeg"])
-
-    if st.button("🚀 Đăng bài"):
-        if not title.strip() or not content.strip():
-            st.warning("⚠️ Vui lòng nhập tiêu đề và nội dung")
-        else:
-            img_name = None
-            if image:
-                img_name = f"{datetime.now().timestamp()}_{image.name}"
-                with open(os.path.join("images", img_name), "wb") as f:
-                    f.write(image.getbuffer())
-
-            conn = get_connection()
-            if conn:
-                cur = conn.cursor()
-                cur.execute("""
-                    INSERT INTO posts (title, content, image, author, category)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (title.strip(), content.strip(), img_name, author.strip() or "Ẩn danh", category))
-                conn.commit()
-                cur.close()
-                conn.close()
-                st.success("✅ Đăng bài thành công!")
-
-# ================= XEM BÀI =======================
-if menu == "📖 Xem bài":
-    st.subheader("📚 Bài viết")
-    selected_category = st.radio("🗂️ Chủ đề", CATEGORIES, horizontal=True)
-    search = st.text_input("🔍 Tìm kiếm")
+# ----------------- XEM BÀI -----------------
+if menu == "📖 Bản tin":
+    st.header("📖 Bản tin cộng đồng")
+    
+    col_cat, col_search = st.columns([1, 1])
+    with col_cat:
+        selected_category = st.selectbox("🗂️ Lọc theo chủ đề", CATEGORIES)
+    with col_search:
+        search_query = st.text_input("🔍 Tìm bài viết...", placeholder="Nhập từ khóa...")
 
     conn = get_connection()
     if conn:
         cur = conn.cursor()
-        cur.execute("SELECT id, title, content, image, author, created_at, category FROM posts ORDER BY id DESC")
+        # Query tối ưu: Chỉ lấy bài viết cần thiết
+        cur.execute("SELECT id, title, content, image, author, created_at, category FROM posts ORDER BY created_at DESC")
         posts = cur.fetchall()
 
         for post in posts:
-            # Filter logic
-            if selected_category != "Tất cả" and post[6] != selected_category:
-                continue
-            if search and not any(search.lower() in str(field).lower() for field in [post[1], post[2], post[4]]):
-                continue
+            # Logic lọc
+            if selected_category != "Tất cả" and post[6] != selected_category: continue
+            if search_query and not any(search_query.lower() in str(f).lower() for f in [post[1], post[2], post[4]]): continue
 
-            st.markdown(f"### {post[1]}")
-            st.caption(f"🏷️ {post[6]} | ✍️ {post[4]} | 🕒 {post[5].strftime('%d/%m/%Y %H:%M')}")
+            # Hiển thị bài viết
+            with st.container():
+                display_post(post)
+                
+                # Reactions tầng 1
+                react_cols = st.columns(len(EMOJIS) + 1)
+                for i, emoji in enumerate(EMOJIS):
+                    cur.execute("SELECT count FROM reactions WHERE post_id=%s AND emoji=%s", (post[0], emoji))
+                    row = cur.fetchone()
+                    count = row[0] if row else 0
+                    if react_cols[i].button(f"{emoji} {count}", key=f"re_{post[0]}_{emoji}"):
+                        cur.execute("""
+                            INSERT INTO reactions (post_id, emoji, count) VALUES (%s, %s, 1)
+                            ON CONFLICT (post_id, emoji) DO UPDATE SET count = reactions.count + 1
+                        """, (post[0], emoji))
+                        conn.commit()
+                        st.rerun()
 
-            # Xử lý ảnh an toàn
-            if post[3]:
-                img_path = os.path.join("images", post[3])
-                if os.path.exists(img_path):
-                    st.image(Image.open(img_path), use_container_width=True)
-
-            st.write(post[2])
-
-            # Reactions
-            cols = st.columns(len(EMOJIS))
-            for i, emoji in enumerate(EMOJIS):
-                cur.execute("SELECT count FROM reactions WHERE post_id=%s AND emoji=%s", (post[0], emoji))
-                row = cur.fetchone()
-                count = row[0] if row else 0
-                if cols[i].button(f"{emoji} {count}", key=f"react_{post[0]}_{emoji}"):
-                    cur.execute("""
-                        INSERT INTO reactions (post_id, emoji, count) VALUES (%s, %s, 1)
-                        ON CONFLICT (post_id, emoji) DO UPDATE SET count = reactions.count + 1
-                    """, (post[0], emoji))
-                    conn.commit()
-                    st.rerun()
-
-            # Comments
-            with st.expander("💬 Bình luận"):
-                cur.execute("SELECT author, content, created_at FROM comments WHERE post_id=%s ORDER BY id DESC", (post[0],))
-                comments = cur.fetchall()
-                for c in comments:
-                    st.markdown(f"**{c[0]}** · {c[2].strftime('%d/%m/%Y %H:%M')}")
-                    st.write(c[1])
-                    st.divider()
-
-                with st.form(key=f"form_cm_{post[0]}"):
-                    c_author = st.text_input("Tên", key=f"ca_{post[0]}")
-                    c_text = st.text_area("Viết bình luận...", key=f"ct_{post[0]}")
-                    if st.form_submit_button("💬 Gửi"):
-                        if c_text.strip():
-                            cur.execute("INSERT INTO comments (post_id, author, content) VALUES (%s, %s, %s)",
-                                       (post[0], c_author.strip() or "Ẩn danh", c_text.strip()))
-                            conn.commit()
-                            st.rerun()
-            st.divider()
+                # Comments tầng 2
+                with st.expander(f"💬 Bình luận"):
+                    cur.execute("SELECT author, content, created_at FROM comments WHERE post_id=%s ORDER BY created_at ASC", (post[0],))
+                    for c in cur.fetchall():
+                        st.markdown(f"**{c[0]}**: {c[1]} *({c[2].strftime('%H:%M')})*")
+                    
+                    with st.form(key=f"comment_form_{post[0]}", clear_on_submit=True):
+                        c_name = st.text_input("Tên bạn", "Ẩn danh")
+                        c_msg = st.text_area("Nội dung bình luận")
+                        if st.form_submit_button("Gửi bình luận"):
+                            if c_msg.strip():
+                                cur.execute("INSERT INTO comments (post_id, author, content) VALUES (%s, %s, %s)",
+                                           (post[0], c_name, c_msg))
+                                conn.commit()
+                                st.rerun()
         cur.close()
         conn.close()
 
-# ================= QUẢN LÝ =======================
-if menu == "⚙️ Quản lý bài viết":
-    st.subheader("⚙️ Quản trị")
-    conn = get_connection()
-    if conn:
-        cur = conn.cursor()
-        cur.execute("SELECT id, title, content, category FROM posts ORDER BY id DESC")
-        posts = cur.fetchall()
-
-        for post in posts:
-            with st.expander(f"📝 {post[1]}"):
-                new_title = st.text_input("Tiêu đề", post[1], key=f"edit_t_{post[0]}")
-                new_category = st.selectbox("Chủ đề", VALID_CATEGORIES, 
-                                           index=VALID_CATEGORIES.index(post[3]) if post[3] in VALID_CATEGORIES else 0,
-                                           key=f"edit_c_{post[0]}")
-                new_content = st.text_area("Nội dung", post[2], key=f"edit_con_{post[0]}")
-
-                c1, c2 = st.columns(2)
-                if c1.button("💾 Lưu", key=f"sv_{post[0]}"):
-                    cur.execute("UPDATE posts SET title=%s, content=%s, category=%s WHERE id=%s",
-                               (new_title, new_content, new_category, post[0]))
+# ----------------- ĐĂNG BÀI -----------------
+elif menu == "✍️ Viết bài mới":
+    st.header("✍️ Tạo bài viết mới")
+    with st.form("post_form"):
+        t1 = st.text_input("Tiêu đề bài viết (*)")
+        t2 = st.selectbox("Chủ đề", VALID_CATEGORIES)
+        t3 = st.text_input("Tên tác giả", "Ẩn danh")
+        t4 = st.text_area("Nội dung bài viết", height=250)
+        t5 = st.file_uploader("Đính kèm hình ảnh", type=['jpg', 'png', 'jpeg'])
+        
+        submit = st.form_submit_button("🚀 Xuất bản ngay")
+        
+        if submit:
+            if not t1 or not t4:
+                st.error("Vui lòng điền đủ tiêu đề và nội dung!")
+            else:
+                img_name = None
+                if t5:
+                    img_name = f"{datetime.now().timestamp()}_{t5.name}"
+                    with open(os.path.join("images", img_name), "wb") as f:
+                        f.write(t5.getbuffer())
+                
+                conn = get_connection()
+                if conn:
+                    cur = conn.cursor()
+                    cur.execute("INSERT INTO posts (title, content, image, author, category) VALUES (%s, %s, %s, %s, %s)",
+                               (t1, t4, img_name, t3, t2))
                     conn.commit()
-                    st.success("Đã cập nhật!")
-                    st.rerun()
-                if c2.button("🗑️ Xóa", key=f"del_{post[0]}"):
-                    cur.execute("DELETE FROM posts WHERE id=%s", (post[0],))
+                    st.success("🎉 Bài viết của bạn đã được đăng!")
+                    conn.close()
+
+# ----------------- QUẢN TRỊ -----------------
+elif menu == "⚙️ Quản trị":
+    st.header("⚙️ Hệ thống quản lý")
+    # Thêm mật khẩu đơn giản để bảo vệ mục quản lý
+    pw = st.text_input("Nhập mã quản trị", type="password")
+    if pw == st.secrets.get("ADMIN_PASSWORD", "123456"):
+        conn = get_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, title FROM posts ORDER BY id DESC")
+            items = cur.fetchall()
+            for item in items:
+                col1, col2 = st.columns([4, 1])
+                col1.write(f"ID: {item[0]} | **{item[1]}**")
+                if col2.button("🗑️ Xóa", key=f"del_{item[0]}"):
+                    cur.execute("DELETE FROM posts WHERE id=%s", (item[0],))
                     conn.commit()
                     st.rerun()
-        cur.close()
-        conn.close()
+            conn.close()
+    else:
+        st.info("Vui lòng nhập đúng mã quản trị để truy cập.")
